@@ -9,13 +9,16 @@
   :root { --up:#e53935; --down:#2e7d32; --muted:#888; }
   * { box-sizing: border-box; }
   body { font-family: "Microsoft JhengHei", system-ui, sans-serif; margin:0; background:#f5f6f8; color:#222; }
-  header { background:#1f2937; color:#fff; padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header { background:#1f2937; color:#fff; padding:14px 20px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   header h1 { font-size:18px; margin:0; font-weight:600; }
   header .spacer { flex:1; }
   header label { font-size:13px; color:#cbd5e1; }
-  header input { width:110px; padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
+  header input, header select { padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; font-size:13px; }
+  header input { width:100px; }
   button { padding:6px 12px; border:0; border-radius:6px; background:#3b82f6; color:#fff; cursor:pointer; font-size:13px; }
   button:hover { background:#2563eb; }
+  .rbtn { background:#334155; color:#e2e8f0; padding:5px 10px; }
+  .rbtn.active { background:#ffd33d; color:#1f2937; font-weight:700; }
   .meta { font-size:12px; color:#94a3b8; }
   nav { display:flex; gap:6px; padding:12px 20px 0; }
   nav button { background:#e2e8f0; color:#334155; font-weight:600; }
@@ -28,7 +31,7 @@
   .up { color:var(--up); } .down { color:var(--down); } .flat { color:#555; }
   .chartbox { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:16px; }
   .chartbox h3 { margin:0 0 8px; font-size:14px; color:#374151; }
-  .canvas-wrap { position:relative; height:320px; }
+  .canvas-wrap { position:relative; height:340px; }
   .canvas-wrap.sm { height:240px; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { padding:6px 8px; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; }
@@ -45,6 +48,13 @@
 <header>
   <h1>實單 / 模擬單 · 投資報酬分析</h1>
   <span class="spacer"></span>
+  <label>開始日期 <select id="start"></select></label>
+  <label>結束日期 <select id="end"></select></label>
+  <span>
+    <button class="rbtn" data-n="5">週</button>
+    <button class="rbtn" data-n="22">月</button>
+    <button class="rbtn" data-n="0">全部</button>
+  </span>
   <label>初始本金 <input id="capital" type="number" value="100000" step="10000"></label>
   <button id="reload">套用</button>
   <button id="refresh">重新載入</button>
@@ -64,11 +74,15 @@
 
 <script>
 const STATE = { report:null, charts:[] };
+const BCOLOR = {'0050':'#b08800', '00631L':'#8250df'};
+const SCOLOR = {real:'#2563eb', sim:'#dc2626'};
 
 function capital(){ const v = parseFloat(document.getElementById('capital').value); return (v>0)?v:100000; }
 function fmt(n, d=0){ if(n===null||n===undefined||isNaN(n)) return '—'; return Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
 function pct(n){ if(n===null||n===undefined||isNaN(n)) return '—'; return (n>0?'+':'')+Number(n).toFixed(2)+'%'; }
 function cls(n){ return n>0.0001?'up':(n<-0.0001?'down':'flat'); }
+function md(iso){ return iso ? iso.slice(5).replace('-','/') : ''; }
+function seriesColor(n){ return n>0?'#dc2626':(n<0?'#2e7d32':'#888'); }
 
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
@@ -77,171 +91,228 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 });
 
 function destroyCharts(){ STATE.charts.forEach(c=>{try{c.destroy();}catch(e){}}); STATE.charts=[]; }
-function mkChart(canvasId, cfg){ const el=document.getElementById(canvasId); if(!el) return; STATE.charts.push(new Chart(el, cfg)); }
-
-// 以本金重算報酬%/淨值/每日損益/回撤（realized、unrealized 與本金無關）
-function rescale(m, cap){
-  if(!m || !m.has_data || !m.dates || !m.dates.length) return m;
-  const realized = m.realized || [];
-  const unreal = m.unrealized || [];
-  const pnl = realized.map((r,i)=> (r||0) + (unreal[i]||0));
-  const ret = pnl.map(x=> x/cap*100);
-  const equity = pnl.map(x=> cap + x);
-  const daily = pnl.map((x,i)=> i? +(x-pnl[i-1]).toFixed(2) : 0);
-  let peak=null; const dd = equity.map(e=>{ peak=(peak===null)?e:Math.max(peak,e); return peak? (e/peak-1)*100 : 0; });
-  const mm = Object.assign({}, m.metrics||{});
-  mm.capital = cap;
-  mm.total_ret_pct = ret.length? +ret[ret.length-1].toFixed(4) : 0;
-  mm.equity = equity.length? +equity[equity.length-1].toFixed(2) : cap;
-  mm.max_dd_pct = dd.length? +Math.min.apply(null, dd).toFixed(4) : 0;
-  return Object.assign({}, m, {ret_pct:ret, equity, daily_pnl:daily, drawdown:dd, metrics:mm});
+function mkChart(id, cfg){ const el=document.getElementById(id); if(!el) return; STATE.charts.push(new Chart(el, cfg)); }
+function baseOpt(yTitle){
+  return { responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+    plugins:{ legend:{display:false} },
+    scales:{ y:{ title:{display:true,text:yTitle} }, x:{ ticks:{maxTicksLimit:12} } } };
+}
+function lineDs(label, data, color, dash){
+  return { label, data, borderColor:color, backgroundColor:color, borderDash:dash||[],
+           borderWidth:2, pointRadius:0, tension:0.15, spanGaps:true };
 }
 
-async function load(force){
+function dayIndexOf(iso){
+  const days = (STATE.report&&STATE.report.days)||[]; const i = days.indexOf(iso); return i<0?null:i;
+}
+
+function currentRange(){
+  const days = (STATE.report&&STATE.report.days)||[];
+  if(!days.length) return {a:0,b:-1,labels:[],days:[]};
+  let a = dayIndexOf(document.getElementById('start').value);
+  let b = dayIndexOf(document.getElementById('end').value);
+  if(a===null) a=0; if(b===null) b=days.length-1;
+  if(a>b){ const t=a; a=b; b=t; }
+  const sl = days.slice(a,b+1);
+  return {a,b,days:sl,labels:sl.map(md)};
+}
+
+// 策略：以區間起點淨值歸零；回傳 {ret, daily, dd, pnlAbs}
+function stratRange(m, cap, a, b){
+  if(!m || !m.dates || !m.dates.length) return null;
+  const realized = m.realized||[], unreal = m.unrealized||[];
+  const pnl = realized.map((r,i)=>(r||0)+(unreal[i]||0));
+  const seg = pnl.slice(a,b+1);
+  if(!seg.length) return null;
+  const e0 = cap + seg[0];
+  const ret = seg.map(p=> e0 ? +(((cap+p)/e0 - 1)*100).toFixed(4) : 0);
+  const eq = seg.map(p=> cap+p);
+  const daily = eq.map((x,i)=> i? +(x-eq[i-1]).toFixed(2) : 0);
+  let peak=null; const dd = eq.map(e=>{ peak=(peak===null)?e:Math.max(peak,e); return peak? +(((e/peak)-1)*100).toFixed(4):0; });
+  return { ret, daily, dd, eq, pnlAbs: seg.map(p=>+p.toFixed(2)) };
+}
+
+// 市場：以區間內第一個有效收盤價歸零
+function mktRange(code, a, b){
+  const mk = (STATE.report.market||{})[code];
+  if(!mk || !mk.close) return null;
+  const seg = mk.close.slice(a,b+1);
+  let base=null; for(const v of seg){ if(v!=null){ base=v; break; } }
+  const ret = seg.map(v=> (v!=null && base)? +(((v/base)-1)*100).toFixed(4) : null);
+  return { ret, close:seg };
+}
+
+function rangeStats(m, cap, a, b){
+  const st = stratRange(m, cap, a, b);
+  if(!st) return null;
+  const days = STATE.report.days;
+  const d0 = days[a], d1 = days[b];
+  const inRange = d => d>=d0 && d<=d1;
+  const closed = (m.closed_trades||[]).filter(t=>inRange(t.date));
+  const events = (m.events||[]).filter(e=>inRange(e.date));
+  const pcts = closed.map(c=>c.pnl_pct);
+  const wins = closed.filter(c=>c.pnl>0), losses = closed.filter(c=>c.pnl<0);
+  const gw = wins.reduce((s,c)=>s+c.pnl,0), gl = Math.abs(losses.reduce((s,c)=>s+c.pnl,0));
+  const realizedDelta = st.pnlAbs[st.pnlAbs.length-1] - st.pnlAbs[0];
+  return {
+    ret_pct: st.ret[st.ret.length-1],
+    pnl: st.pnlAbs[st.pnlAbs.length-1] - st.pnlAbs[0],
+    equity: st.eq[st.eq.length-1],
+    realized: +realizedDelta.toFixed(2),
+    unrealized: (m.unrealized||[]).length? +(m.unrealized[b]||0).toFixed(2) : 0,
+    max_dd: Math.min.apply(null, st.dd),
+    n_fills: events.length,
+    n_closed: closed.length,
+    win_rate: closed.length? +(wins.length/closed.length*100).toFixed(1) : null,
+    avg_trade_pct: pcts.length? +(pcts.reduce((s,x)=>s+x,0)/pcts.length).toFixed(2) : null,
+    profit_factor: gl>0? +(gw/gl).toFixed(2) : null,
+    best: pcts.length? Math.max.apply(null,pcts) : null,
+    worst: pcts.length? Math.min.apply(null,pcts) : null,
+    closed, strat: st,
+  };
+}
+
+function load(force){
   const url = './data.json?v=' + (force? Date.now() : (window.__v||(window.__v=Date.now())));
-  try {
-    const r = await fetch(url, {cache:'no-store'});
-    STATE.report = await r.json();
-    document.getElementById('meta').textContent = '資料時間 ' + (STATE.report.generated_at||'-') + ' ｜ 本金 ' + fmt(capital());
+  fetch(url, {cache:'no-store'}).then(r=>r.json()).then(rep=>{
+    STATE.report = rep;
+    setupSelectors(rep);
     renderAll();
-  } catch(e){
-    document.getElementById('meta').textContent = '載入失敗: '+e;
-  }
+  }).catch(e=>{ document.getElementById('meta').textContent = '載入失敗: '+e; });
+}
+
+function setupSelectors(rep){
+  const days = rep.days||[];
+  const s=document.getElementById('start'), e=document.getElementById('end');
+  s.innerHTML = days.map(d=>'<option value="'+d+'">'+d+'</option>').join('');
+  e.innerHTML = s.innerHTML;
+  if(!days.length) return;
+  let a = days.findIndex(d => d >= (rep.market_start||days[0]));
+  if(a<0) a=0;
+  // 若使用者已選過，沿用
+  const prevS = s.dataset.pick, prevE = e.dataset.pick;
+  s.value = (prevS && days.includes(prevS)) ? prevS : days[a];
+  e.value = (prevE && days.includes(prevE)) ? prevE : days[days.length-1];
+  s.dataset.pick = s.value; e.dataset.pick = e.value;
+}
+
+function applyQuick(n){
+  const days = STATE.report.days||[];
+  if(!days.length) return;
+  const s=document.getElementById('start'), e=document.getElementById('end');
+  const sub = n>0 ? days.slice(-n) : days;
+  s.value = sub[0]; e.value = sub[sub.length-1];
+  s.dataset.pick=s.value; e.dataset.pick=e.value;
+  renderAll();
 }
 
 function renderAll(){
   const rep = STATE.report; if(!rep) return;
   destroyCharts();
   renderNotes(rep);
+  const {a,b,labels} = currentRange();
   const cap = capital();
-  renderCompare(rep, cap);
-  renderMode('real', rescale(rep.real, cap));
-  renderMode('sim', rescale(rep.sim, cap));
+  document.getElementById('meta').textContent =
+    '資料時間 '+(rep.generated_at||'-')+' ｜ 期間 '+(labels.length?labels[0]+'~'+labels[labels.length-1]:'-')+' ｜ 本金 '+fmt(cap);
+  renderCompare(rep, cap, a, b, labels);
+  renderMode('real', rep.real, cap, a, b, labels);
+  renderMode('sim', rep.sim, cap, a, b, labels);
 }
 
 function renderNotes(rep){
   const el=document.getElementById('notes');
-  const notes=[];
-  if(rep.notes && rep.notes.length) notes.push.apply(notes, rep.notes);
-  if(!rep.has_data) notes.push('目前尚無任何成交紀錄，待模擬/實單下單後即會自動出現。');
+  const notes=[].concat(rep.notes||[]);
+  if(!(rep.days||[]).length) notes.push('尚無任何市場或交易資料。');
   el.innerHTML = notes.map(n=>'<div class="notes">'+n+'</div>').join('');
 }
 
-function metricCards(m){
-  if(!m || m.n_fills===undefined) return '<div class="empty">尚無交易紀錄</div>';
+function metricCards(st){
+  if(!st) return '<div class="empty">此區間無資料</div>';
   const items = [
-    ['總報酬', pct(m.total_ret_pct), cls(m.total_ret_pct)],
-    ['淨值', fmt(m.equity), ''],
-    ['已實現', fmt(m.realized), cls(m.realized)],
-    ['未實現', fmt(m.unrealized), cls(m.unrealized)],
-    ['最大回撤', pct(m.max_dd_pct), m.max_dd_pct<0?'down':'flat'],
-    ['平倉筆數', fmt(m.n_closed), ''],
-    ['勝率', m.win_rate===null||m.win_rate===undefined?'—':m.win_rate+'%', ''],
-    ['平均每筆', m.avg_trade_pct===null||m.avg_trade_pct===undefined?'—':pct(m.avg_trade_pct), cls(m.avg_trade_pct)],
-    ['Profit Factor', m.profit_factor===null||m.profit_factor===undefined?'—':m.profit_factor, ''],
-    ['最佳/最差', (m.best_pct==null?'—':pct(m.best_pct))+' / '+(m.worst_pct==null?'—':pct(m.worst_pct)), ''],
+    ['區間報酬', pct(st.ret_pct), cls(st.ret_pct)],
+    ['區間損益', fmt(st.pnl), cls(st.pnl)],
+    ['淨值', fmt(st.equity), ''],
+    ['已實現(區間)', fmt(st.realized), cls(st.realized)],
+    ['未實現', fmt(st.unrealized), cls(st.unrealized)],
+    ['最大回撤', pct(st.max_dd), st.max_dd<0?'down':'flat'],
+    ['平倉筆數', fmt(st.n_closed), ''],
+    ['勝率', st.win_rate===null?'—':st.win_rate+'%', ''],
+    ['平均每筆', st.avg_trade_pct===null?'—':pct(st.avg_trade_pct), cls(st.avg_trade_pct)],
+    ['Profit Factor', st.profit_factor===null?'—':st.profit_factor, ''],
+    ['最佳/最差', (st.best==null?'—':pct(st.best))+' / '+(st.worst==null?'—':pct(st.worst)), ''],
   ];
   return '<div class="cards">'+items.map(([k,v,c])=>
     '<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div></div>').join('')+'</div>';
 }
 
-function lineDs(label, data, color, dash){
-  return { label, data, borderColor:color, backgroundColor:color, borderDash:dash||[],
-           borderWidth:2, pointRadius:0, tension:0.15, spanGaps:true };
-}
-
-function renderCompare(rep, cap){
+function renderCompare(rep, cap, a, b, labels){
   const v = document.getElementById('view-compare');
-  const realM=(rep.real||{}).metrics||{}, simM=(rep.sim||{}).metrics||{};
-  const realS=rescale(rep.real,cap), simS=rescale(rep.sim,cap);
-  const dates = (realS&&realS.dates&&realS.dates.length)?realS.dates:((simS&&simS.dates)||[]);
-  const benchDs=[];
-  const bcolors={'0050':'#f59e0b','00631L':'#8b5cf6'};
-  Object.keys(rep.benchmarks||{}).forEach(code=>{
-    const b=rep.benchmarks[code];
-    benchDs.push(lineDs(b.label, b.ret_pct, bcolors[code]||'#999', [6,4]));
-  });
+  const realSt = rangeStats(rep.real, cap, a, b);
+  const simSt  = rangeStats(rep.sim,  cap, a, b);
   v.innerHTML =
     '<div class="two">'+
-      '<div><h3 style="margin:0 0 8px;color:#2563eb">實單</h3>'+metricCards((realS||{}).metrics||realM)+'</div>'+
-      '<div><h3 style="margin:0 0 8px;color:#dc2626">模擬單</h3>'+metricCards((simS||{}).metrics||simM)+'</div>'+
+      '<div><h3 style="margin:0 0 8px;color:#2563eb">實單</h3>'+metricCards(realSt)+'</div>'+
+      '<div><h3 style="margin:0 0 8px;color:#dc2626">模擬單</h3>'+metricCards(simSt)+'</div>'+
     '</div>'+
-    '<div class="chartbox"><h3>累積總報酬 %（實單 vs 模擬單 vs 傭兵）</h3>'+
+    '<div class="chartbox"><h3>累積總報酬 %（以區間第一天為 0）— 實單 vs 模擬單 vs 0050 vs 00631L</h3>'+
       '<div class="canvas-wrap"><canvas id="c-cmp"></canvas></div></div>';
-  const realDs = (realS&&realS.ret_pct)?lineDs('實單', realS.ret_pct, '#2563eb'):null;
-  const simDs  = (simS&&simS.ret_pct)?lineDs('模擬單', simS.ret_pct, '#dc2626'):null;
-  const datasets=[realDs, simDs].concat(benchDs).filter(Boolean);
+
+  const datasets=[];
+  if(realSt) datasets.push(lineDs('實單', realSt.strat.ret, SCOLOR.real));
+  if(simSt)  datasets.push(lineDs('模擬單', simSt.strat.ret, SCOLOR.sim));
+  Object.keys(rep.market||{}).forEach(code=>{
+    const mk = mktRange(code, a, b);
+    if(mk) datasets.push(lineDs((rep.market[code].label||code), mk.ret, BCOLOR[code]||'#999', [6,4]));
+  });
   mkChart('c-cmp', { type:'line',
-    data:{ labels: dates, datasets },
+    data:{ labels, datasets },
     options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
       plugins:{ legend:{position:'top'} },
       scales:{ y:{ title:{display:true,text:'報酬 %'} }, x:{ ticks:{maxTicksLimit:12} } } } });
 }
 
 function histogram(pcts){
-  if(!pcts.length) return {labels:[],counts:[]};
   const bins=[-20,-15,-10,-5,-2,0,2,5,10,15,20,30];
-  const counts=new Array(bins.length-1).fill(0);
-  const labels=[];
+  const counts=new Array(bins.length-1).fill(0); const labels=[];
   for(let i=0;i<bins.length-1;i++) labels.push(bins[i]+'~'+bins[i+1]+'%');
-  pcts.forEach(p=>{
-    let idx=counts.length-1;
-    for(let i=0;i<bins.length-1;i++){ if(p>=bins[i]&&p<bins[i+1]){idx=i;break;} }
-    counts[idx]++;
-  });
+  pcts.forEach(p=>{ let idx=counts.length-1; for(let i=0;i<bins.length-1;i++){ if(p>=bins[i]&&p<bins[i+1]){idx=i;break;} } counts[idx]++; });
   return {labels,counts};
 }
 
-function renderMode(key, m){
+function renderMode(key, m, cap, a, b, labels){
   const v = document.getElementById('view-'+key);
-  if(!m || !m.has_data || !m.dates || !m.dates.length){
-    v.innerHTML = metricCards((m&&m.metrics)||{}) + '<div class="empty">尚無'+ (key==='real'?'實單':'模擬單') +'交易紀錄</div>';
+  const st = rangeStats(m, cap, a, b);
+  if(!st){
+    v.innerHTML = '<div class="empty">尚無'+ (key==='real'?'實單':'模擬單') +'交易紀錄</div>';
     return;
   }
-  const pcts=(m.closed_trades||[]).map(t=>t.pnl_pct);
-  const hist=histogram(pcts);
-  const green='#16a34a', red='#dc2626';
+  const hist = histogram(st.closed.map(t=>t.pnl_pct));
   v.innerHTML =
-    metricCards(m.metrics)+
-    '<div class="chartbox"><h3>總損益（已實現 + 未實現）</h3>'+
-      '<div class="canvas-wrap"><canvas id="c-'+key+'-pnl"></canvas></div></div>'+
+    metricCards(st)+
+    '<div class="chartbox"><h3>累積報酬 %（以區間第一天為 0）</h3>'+
+      '<div class="canvas-wrap"><canvas id="c-'+key+'-ret"></canvas></div></div>'+
     '<div class="two">'+
-      '<div class="chartbox"><h3>每日損益</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-daily"></canvas></div></div>'+
+      '<div class="chartbox"><h3>每日損益（元）</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-daily"></canvas></div></div>'+
       '<div class="chartbox"><h3>回撤 %</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-dd"></canvas></div></div>'+
     '</div>'+
-    '<div class="chartbox"><h3>每筆平倉報酬分布</h3>'+
-      '<div class="canvas-wrap sm"><canvas id="c-'+key+'-hist"></canvas></div></div>'+
-    tableHtml(m);
+    '<div class="chartbox"><h3>每筆平倉報酬分布</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-hist"></canvas></div></div>'+
+    tableHtml(st.closed);
 
-  mkChart('c-'+key+'-pnl', { type:'line',
-    data:{ labels:m.dates, datasets:[
-      lineDs('淨損益', m.realized.map((r,i)=>+(r+m.unrealized[i]).toFixed(2)), '#2563eb') ]},
-    options:baseOpt('元') });
-
+  mkChart('c-'+key+'-ret', { type:'line',
+    data:{ labels, datasets:[ lineDs('報酬%', st.strat.ret, SCOLOR[key]) ]}, options:baseOpt('%') });
   mkChart('c-'+key+'-daily', { type:'bar',
-    data:{ labels:m.dates, datasets:[{ label:'每日損益',
-      data:m.daily_pnl, backgroundColor:m.daily_pnl.map(x=>x>=0?red:green) }]},
+    data:{ labels, datasets:[{ label:'每日損益', data:st.strat.daily, backgroundColor:st.strat.daily.map(seriesColor) }]},
     options:baseOpt('元') });
-
   mkChart('c-'+key+'-dd', { type:'line',
-    data:{ labels:m.dates, datasets:[ lineDs('回撤', m.drawdown, '#ef4444') ]},
-    options:baseOpt('%') });
-
+    data:{ labels, datasets:[ lineDs('回撤', st.strat.dd, '#ef4444') ]}, options:baseOpt('%') });
   mkChart('c-'+key+'-hist', { type:'bar',
-    data:{ labels:hist.labels, datasets:[{ label:'筆數',
-      data:hist.counts, backgroundColor:'#3b82f6' }]},
+    data:{ labels:hist.labels, datasets:[{ label:'筆數', data:hist.counts, backgroundColor:'#3b82f6' }]},
     options:baseOpt('筆數') });
 }
 
-function baseOpt(yTitle){
-  return { responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
-    plugins:{ legend:{display:false} },
-    scales:{ y:{ title:{display:true,text:yTitle} }, x:{ ticks:{maxTicksLimit:12} } } };
-}
-
-function tableHtml(m){
-  const rows=(m.closed_trades||[]).slice().reverse();
-  if(!rows.length) return '';
+function tableHtml(closed){
+  const rows=(closed||[]).slice().reverse();
+  if(!rows.length) return '<div class="empty">此區間無平倉紀錄</div>';
   return '<div class="chartbox"><h3>平倉明細（'+rows.length+' 筆）</h3><div class="wrap-table"><table>'+
     '<thead><tr><th>日期</th><th>代號 名稱</th><th>股數</th><th>買均</th><th>賣價</th><th>費+稅</th><th>損益</th><th>報酬%</th></tr></thead><tbody>'+
     rows.map(t=>'<tr><td>'+t.date+'</td><td>'+t.code+' '+t.name+'</td><td>'+fmt(t.shares)+
@@ -252,7 +323,15 @@ function tableHtml(m){
 }
 
 document.getElementById('capital').value = localStorage.getItem('roi_capital') || '100000';
-document.getElementById('reload').onclick = ()=>{ localStorage.setItem('roi_capital', document.getElementById('capital').value||'100000'); document.getElementById('meta').textContent='資料時間 '+(STATE.report?STATE.report.generated_at:'-')+' ｜ 本金 '+fmt(capital()); renderAll(); };
+document.getElementById('start').addEventListener('change', e=>{ e.target.dataset.pick=e.target.value; renderAll(); });
+document.getElementById('end').addEventListener('change', e=>{ e.target.dataset.pick=e.target.value; renderAll(); });
+document.querySelectorAll('.rbtn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.rbtn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); applyQuick(Number(b.dataset.n));
+});
+document.getElementById('reload').onclick = ()=>{
+  localStorage.setItem('roi_capital', document.getElementById('capital').value||'100000'); renderAll();
+};
 document.getElementById('refresh').onclick = ()=>load(true);
 
 load(false);
