@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>實單 / 模擬單 ROI 報表</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --up:#e53935; --down:#2e7d32; --muted:#888; }
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft JhengHei", system-ui, sans-serif; margin:0; background:#f5f6f8; color:#222; }
+  header { background:#1f2937; color:#fff; padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .spacer { flex:1; }
+  header label { font-size:13px; color:#cbd5e1; }
+  header input { width:110px; padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
+  button { padding:6px 12px; border:0; border-radius:6px; background:#3b82f6; color:#fff; cursor:pointer; font-size:13px; }
+  button:hover { background:#2563eb; }
+  .meta { font-size:12px; color:#94a3b8; }
+  nav { display:flex; gap:6px; padding:12px 20px 0; }
+  nav button { background:#e2e8f0; color:#334155; font-weight:600; }
+  nav button.active { background:#3b82f6; color:#fff; }
+  main { padding:16px 20px 60px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; }
+  .card .k { font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .card .v { font-size:20px; font-weight:700; }
+  .up { color:var(--up); } .down { color:var(--down); } .flat { color:#555; }
+  .chartbox { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:16px; }
+  .chartbox h3 { margin:0 0 8px; font-size:14px; color:#374151; }
+  .canvas-wrap { position:relative; height:320px; }
+  .canvas-wrap.sm { height:240px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:6px 8px; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { background:#f9fafb; color:#6b7280; font-weight:600; position:sticky; top:0; }
+  .wrap-table { max-height:420px; overflow:auto; background:#fff; border:1px solid #e5e7eb; border-radius:10px; }
+  .empty { text-align:center; color:var(--muted); padding:48px; }
+  .notes { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:900px){ .two { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>實單 / 模擬單 · 投資報酬分析</h1>
+  <span class="spacer"></span>
+  <label>初始本金 <input id="capital" type="number" value="100000" step="10000"></label>
+  <button id="reload">套用</button>
+  <button id="refresh">重新載入</button>
+  <span class="meta" id="meta">載入中…</span>
+</header>
+<nav>
+  <button data-tab="compare" class="active">對照</button>
+  <button data-tab="real">實單</button>
+  <button data-tab="sim">模擬單</button>
+</nav>
+<main>
+  <div id="notes"></div>
+  <section id="view-compare"></section>
+  <section id="view-real" style="display:none"></section>
+  <section id="view-sim" style="display:none"></section>
+</main>
+
+<script>
+const STATE = { report:null, charts:[] };
+
+function capital(){ const v = parseFloat(document.getElementById('capital').value); return (v>0)?v:100000; }
+function fmt(n, d=0){ if(n===null||n===undefined||isNaN(n)) return '—'; return Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
+function pct(n){ if(n===null||n===undefined||isNaN(n)) return '—'; return (n>0?'+':'')+Number(n).toFixed(2)+'%'; }
+function cls(n){ return n>0.0001?'up':(n<-0.0001?'down':'flat'); }
+
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  ['compare','real','sim'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
+});
+
+function destroyCharts(){ STATE.charts.forEach(c=>{try{c.destroy();}catch(e){}}); STATE.charts=[]; }
+function mkChart(canvasId, cfg){ const el=document.getElementById(canvasId); if(!el) return; STATE.charts.push(new Chart(el, cfg)); }
+
+// 以本金重算報酬%/淨值/每日損益/回撤（realized、unrealized 與本金無關）
+function rescale(m, cap){
+  if(!m || !m.has_data || !m.dates || !m.dates.length) return m;
+  const realized = m.realized || [];
+  const unreal = m.unrealized || [];
+  const pnl = realized.map((r,i)=> (r||0) + (unreal[i]||0));
+  const ret = pnl.map(x=> x/cap*100);
+  const equity = pnl.map(x=> cap + x);
+  const daily = pnl.map((x,i)=> i? +(x-pnl[i-1]).toFixed(2) : 0);
+  let peak=null; const dd = equity.map(e=>{ peak=(peak===null)?e:Math.max(peak,e); return peak? (e/peak-1)*100 : 0; });
+  const mm = Object.assign({}, m.metrics||{});
+  mm.capital = cap;
+  mm.total_ret_pct = ret.length? +ret[ret.length-1].toFixed(4) : 0;
+  mm.equity = equity.length? +equity[equity.length-1].toFixed(2) : cap;
+  mm.max_dd_pct = dd.length? +Math.min.apply(null, dd).toFixed(4) : 0;
+  return Object.assign({}, m, {ret_pct:ret, equity, daily_pnl:daily, drawdown:dd, metrics:mm});
+}
+
+async function load(force){
+  const url = './data.json?v=' + (force? Date.now() : (window.__v||(window.__v=Date.now())));
+  try {
+    const r = await fetch(url, {cache:'no-store'});
+    STATE.report = await r.json();
+    document.getElementById('meta').textContent = '資料時間 ' + (STATE.report.generated_at||'-') + ' ｜ 本金 ' + fmt(capital());
+    renderAll();
+  } catch(e){
+    document.getElementById('meta').textContent = '載入失敗: '+e;
+  }
+}
+
+function renderAll(){
+  const rep = STATE.report; if(!rep) return;
+  destroyCharts();
+  renderNotes(rep);
+  const cap = capital();
+  renderCompare(rep, cap);
+  renderMode('real', rescale(rep.real, cap));
+  renderMode('sim', rescale(rep.sim, cap));
+}
+
+function renderNotes(rep){
+  const el=document.getElementById('notes');
+  const notes=[];
+  if(rep.notes && rep.notes.length) notes.push.apply(notes, rep.notes);
+  if(!rep.has_data) notes.push('目前尚無任何成交紀錄，待模擬/實單下單後即會自動出現。');
+  el.innerHTML = notes.map(n=>'<div class="notes">'+n+'</div>').join('');
+}
+
+function metricCards(m){
+  if(!m || m.n_fills===undefined) return '<div class="empty">尚無交易紀錄</div>';
+  const items = [
+    ['總報酬', pct(m.total_ret_pct), cls(m.total_ret_pct)],
+    ['淨值', fmt(m.equity), ''],
+    ['已實現', fmt(m.realized), cls(m.realized)],
+    ['未實現', fmt(m.unrealized), cls(m.unrealized)],
+    ['最大回撤', pct(m.max_dd_pct), m.max_dd_pct<0?'down':'flat'],
+    ['平倉筆數', fmt(m.n_closed), ''],
+    ['勝率', m.win_rate===null||m.win_rate===undefined?'—':m.win_rate+'%', ''],
+    ['平均每筆', m.avg_trade_pct===null||m.avg_trade_pct===undefined?'—':pct(m.avg_trade_pct), cls(m.avg_trade_pct)],
+    ['Profit Factor', m.profit_factor===null||m.profit_factor===undefined?'—':m.profit_factor, ''],
+    ['最佳/最差', (m.best_pct==null?'—':pct(m.best_pct))+' / '+(m.worst_pct==null?'—':pct(m.worst_pct)), ''],
+  ];
+  return '<div class="cards">'+items.map(([k,v,c])=>
+    '<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div></div>').join('')+'</div>';
+}
+
+function lineDs(label, data, color, dash){
+  return { label, data, borderColor:color, backgroundColor:color, borderDash:dash||[],
+           borderWidth:2, pointRadius:0, tension:0.15, spanGaps:true };
+}
+
+function renderCompare(rep, cap){
+  const v = document.getElementById('view-compare');
+  const realM=(rep.real||{}).metrics||{}, simM=(rep.sim||{}).metrics||{};
+  const realS=rescale(rep.real,cap), simS=rescale(rep.sim,cap);
+  const dates = (realS&&realS.dates&&realS.dates.length)?realS.dates:((simS&&simS.dates)||[]);
+  const benchDs=[];
+  const bcolors={'0050':'#f59e0b','00631L':'#8b5cf6'};
+  Object.keys(rep.benchmarks||{}).forEach(code=>{
+    const b=rep.benchmarks[code];
+    benchDs.push(lineDs(b.label, b.ret_pct, bcolors[code]||'#999', [6,4]));
+  });
+  v.innerHTML =
+    '<div class="two">'+
+      '<div><h3 style="margin:0 0 8px;color:#2563eb">實單</h3>'+metricCards((realS||{}).metrics||realM)+'</div>'+
+      '<div><h3 style="margin:0 0 8px;color:#dc2626">模擬單</h3>'+metricCards((simS||{}).metrics||simM)+'</div>'+
+    '</div>'+
+    '<div class="chartbox"><h3>累積總報酬 %（實單 vs 模擬單 vs 傭兵）</h3>'+
+      '<div class="canvas-wrap"><canvas id="c-cmp"></canvas></div></div>';
+  const realDs = (realS&&realS.ret_pct)?lineDs('實單', realS.ret_pct, '#2563eb'):null;
+  const simDs  = (simS&&simS.ret_pct)?lineDs('模擬單', simS.ret_pct, '#dc2626'):null;
+  const datasets=[realDs, simDs].concat(benchDs).filter(Boolean);
+  mkChart('c-cmp', { type:'line',
+    data:{ labels: dates, datasets },
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{position:'top'} },
+      scales:{ y:{ title:{display:true,text:'報酬 %'} }, x:{ ticks:{maxTicksLimit:12} } } } });
+}
+
+function histogram(pcts){
+  if(!pcts.length) return {labels:[],counts:[]};
+  const bins=[-20,-15,-10,-5,-2,0,2,5,10,15,20,30];
+  const counts=new Array(bins.length-1).fill(0);
+  const labels=[];
+  for(let i=0;i<bins.length-1;i++) labels.push(bins[i]+'~'+bins[i+1]+'%');
+  pcts.forEach(p=>{
+    let idx=counts.length-1;
+    for(let i=0;i<bins.length-1;i++){ if(p>=bins[i]&&p<bins[i+1]){idx=i;break;} }
+    counts[idx]++;
+  });
+  return {labels,counts};
+}
+
+function renderMode(key, m){
+  const v = document.getElementById('view-'+key);
+  if(!m || !m.has_data || !m.dates || !m.dates.length){
+    v.innerHTML = metricCards((m&&m.metrics)||{}) + '<div class="empty">尚無'+ (key==='real'?'實單':'模擬單') +'交易紀錄</div>';
+    return;
+  }
+  const pcts=(m.closed_trades||[]).map(t=>t.pnl_pct);
+  const hist=histogram(pcts);
+  const green='#16a34a', red='#dc2626';
+  v.innerHTML =
+    metricCards(m.metrics)+
+    '<div class="chartbox"><h3>總損益（已實現 + 未實現）</h3>'+
+      '<div class="canvas-wrap"><canvas id="c-'+key+'-pnl"></canvas></div></div>'+
+    '<div class="two">'+
+      '<div class="chartbox"><h3>每日損益</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-daily"></canvas></div></div>'+
+      '<div class="chartbox"><h3>回撤 %</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-dd"></canvas></div></div>'+
+    '</div>'+
+    '<div class="chartbox"><h3>每筆平倉報酬分布</h3>'+
+      '<div class="canvas-wrap sm"><canvas id="c-'+key+'-hist"></canvas></div></div>'+
+    tableHtml(m);
+
+  mkChart('c-'+key+'-pnl', { type:'line',
+    data:{ labels:m.dates, datasets:[
+      lineDs('淨損益', m.realized.map((r,i)=>+(r+m.unrealized[i]).toFixed(2)), '#2563eb') ]},
+    options:baseOpt('元') });
+
+  mkChart('c-'+key+'-daily', { type:'bar',
+    data:{ labels:m.dates, datasets:[{ label:'每日損益',
+      data:m.daily_pnl, backgroundColor:m.daily_pnl.map(x=>x>=0?red:green) }]},
+    options:baseOpt('元') });
+
+  mkChart('c-'+key+'-dd', { type:'line',
+    data:{ labels:m.dates, datasets:[ lineDs('回撤', m.drawdown, '#ef4444') ]},
+    options:baseOpt('%') });
+
+  mkChart('c-'+key+'-hist', { type:'bar',
+    data:{ labels:hist.labels, datasets:[{ label:'筆數',
+      data:hist.counts, backgroundColor:'#3b82f6' }]},
+    options:baseOpt('筆數') });
+}
+
+function baseOpt(yTitle){
+  return { responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+    plugins:{ legend:{display:false} },
+    scales:{ y:{ title:{display:true,text:yTitle} }, x:{ ticks:{maxTicksLimit:12} } } };
+}
+
+function tableHtml(m){
+  const rows=(m.closed_trades||[]).slice().reverse();
+  if(!rows.length) return '';
+  return '<div class="chartbox"><h3>平倉明細（'+rows.length+' 筆）</h3><div class="wrap-table"><table>'+
+    '<thead><tr><th>日期</th><th>代號 名稱</th><th>股數</th><th>買均</th><th>賣價</th><th>費+稅</th><th>損益</th><th>報酬%</th></tr></thead><tbody>'+
+    rows.map(t=>'<tr><td>'+t.date+'</td><td>'+t.code+' '+t.name+'</td><td>'+fmt(t.shares)+
+      '</td><td>'+fmt(t.avg_cost,2)+'</td><td>'+fmt(t.sell_price,2)+
+      '</td><td>'+fmt(t.fee+t.tax,0)+'</td><td class="'+cls(t.pnl)+'">'+fmt(t.pnl)+
+      '</td><td class="'+cls(t.pnl_pct)+'">'+pct(t.pnl_pct)+'</td></tr>').join('')+
+    '</tbody></table></div></div>';
+}
+
+document.getElementById('capital').value = localStorage.getItem('roi_capital') || '100000';
+document.getElementById('reload').onclick = ()=>{ localStorage.setItem('roi_capital', document.getElementById('capital').value||'100000'); document.getElementById('meta').textContent='資料時間 '+(STATE.report?STATE.report.generated_at:'-')+' ｜ 本金 '+fmt(capital()); renderAll(); };
+document.getElementById('refresh').onclick = ()=>load(true);
+
+load(false);
+</script>
+</body>
+</html>

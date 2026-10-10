@@ -1,0 +1,1 @@
+{"generated_at": "2026-10-10T23:03:10", "capital": 100000, "has_data": false, "real": {"label": "實單", "has_data": false, "dates": [], "metrics": {}}, "sim": {"label": "模擬單", "has_data": false, "dates": [], "metrics": {}}, "benchmarks": {}, "notes": ["尚無交易紀錄（shioaji_trades.json / shioaji_trades_sim.json）"]}
