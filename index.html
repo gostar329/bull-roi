@@ -42,6 +42,13 @@
   .notes { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
   .two { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media (max-width:900px){ .two { grid-template-columns:1fr; } }
+  .segtoggle { display:flex; gap:6px; margin-bottom:14px; }
+  .accbtn { background:#334155; color:#e2e8f0; padding:5px 14px; }
+  .accbtn.active { background:#ffd33d; color:#1f2937; font-weight:700; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .tag-up { background:#fdecea; color:#c0392b; }
+  .tag-down { background:#e8f5e9; color:#2e7d32; }
+  .tag-neutral { background:#eef1f4; color:#666; }
 </style>
 </head>
 <body>
@@ -64,12 +71,14 @@
   <button data-tab="compare" class="active">對照</button>
   <button data-tab="real">實單</button>
   <button data-tab="sim">模擬單</button>
+  <button data-tab="records">交易紀錄</button>
 </nav>
 <main>
   <div id="notes"></div>
   <section id="view-compare"></section>
   <section id="view-real" style="display:none"></section>
   <section id="view-sim" style="display:none"></section>
+  <section id="view-records" style="display:none"></section>
 </main>
 
 <script>
@@ -87,7 +96,7 @@ function seriesColor(n){ return n>0?'#dc2626':(n<0?'#2e7d32':'#888'); }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  ['compare','real','sim'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
+  ['compare','real','sim','records'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
 });
 
 function destroyCharts(){ STATE.charts.forEach(c=>{try{c.destroy();}catch(e){}}); STATE.charts=[]; }
@@ -217,6 +226,7 @@ function renderAll(){
   renderCompare(rep, cap, a, b, labels);
   renderMode('real', rep.real, cap, a, b, labels);
   renderMode('sim', rep.sim, cap, a, b, labels);
+  renderRecords(rep, cap, a, b, labels);
 }
 
 function renderNotes(rep){
@@ -308,6 +318,75 @@ function renderMode(key, m, cap, a, b, labels){
   mkChart('c-'+key+'-hist', { type:'bar',
     data:{ labels:hist.labels, datasets:[{ label:'筆數', data:hist.counts, backgroundColor:'#3b82f6' }]},
     options:baseOpt('筆數') });
+}
+
+let recordsKey = 'real';
+
+function recordsToggleHtml(){
+  const b = k => '<button class="accbtn'+(recordsKey===k?' active':'')+'" data-acc="'+k+'">'+((STATE.report&&STATE.report[k])?STATE.report[k].label:k)+'</button>';
+  return '<div class="segtoggle">'+b('real')+b('sim')+'</div>';
+}
+
+function positionsTable(positions){
+  if(!positions || !positions.length) return '<div class="chartbox"><h3>目前持倉</h3><div class="empty">目前無持倉</div></div>';
+  return '<div class="chartbox"><h3>目前持倉（最新）</h3><div class="wrap-table"><table>'+
+    '<thead><tr><th>股票</th><th>代號</th><th>股數</th><th>均價</th><th>現價</th><th>市值</th><th>損益</th></tr></thead><tbody>'+
+    positions.map(p=>{
+      const px = (p.last_price!=null ? p.last_price : p.avg_cost);
+      const mv = px*p.shares;
+      return '<tr><td>'+p.name+'</td><td>'+p.code+'</td><td>'+fmt(p.shares)+'</td><td>'+fmt(p.avg_cost,2)+
+        '</td><td>'+fmt(px,2)+'</td><td>'+fmt(mv)+'</td><td class="'+cls(p.unrealized)+'">'+fmt(p.unrealized)+'</td></tr>';
+    }).join('')+'</tbody></table></div></div>';
+}
+
+function resultTag(e){
+  if(e.action !== 'sell') return '<span class="tag tag-neutral">進場</span>';
+  if(Math.round(e.realized) === 0) return '<span class="tag tag-neutral">平</span>';
+  return e.realized > 0 ? '<span class="tag tag-up">賺</span>' : '<span class="tag tag-down">賠</span>';
+}
+
+function eventsTable(events){
+  if(!events || !events.length) return '<div class="chartbox"><h3>交易紀錄</h3><div class="empty">此區間無交易紀錄</div></div>';
+  const rows = events.map(e=>{
+    const isBuy = e.action==='buy';
+    const time = e.ts ? e.ts.slice(5,16).replace('T',' ') : e.date;
+    const pnl = isBuy ? '<td class="flat">—</td>'
+      : '<td class="'+cls(e.realized)+'">'+fmt(e.realized)+(e.pnl_pct!=null?' <span style="font-size:.85em">('+pct(e.pnl_pct)+')</span>':'')+'</td>';
+    const title = e.reason ? ' title="'+e.reason+'"' : '';
+    return '<tr'+title+'><td>'+time+'</td><td>'+resultTag(e)+'</td><td>'+e.name+'</td><td>'+e.code+'</td>'+
+      '<td>'+(isBuy?'買':'賣')+'</td><td>'+fmt(e.shares)+'</td><td>'+fmt(e.price,2)+'</td>'+
+      '<td>'+fmt(e.amount)+'</td><td>'+fmt(e.fee+e.tax)+'</td>'+pnl+'</tr>';
+  }).join('');
+  return '<div class="chartbox"><h3>交易紀錄（逐筆成交，'+events.length+' 筆）</h3><div class="wrap-table"><table>'+
+    '<thead><tr><th>時間</th><th>賺賠</th><th>股票</th><th>代號</th><th>買賣</th><th>股數</th><th>價格</th><th>金額</th><th>費+稅</th><th>損益</th></tr></thead><tbody>'+
+    rows+'</tbody></table></div></div>';
+}
+
+function renderRecords(rep, cap, a, b, labels){
+  const v = document.getElementById('view-records');
+  const m = rep[recordsKey] || {};
+  const st = rangeStats(m, cap, a, b);
+  const days = rep.days || [];
+  const d0 = days[a], d1 = days[b];
+  const inRange = d => d>=d0 && d<=d1;
+  const events = (m.events||[]).filter(e=>inRange(e.date)).slice().reverse();
+  const positions = m.open_positions || [];
+  const mktVal = positions.reduce((s,p)=> s + ((p.last_price!=null?p.last_price:p.avg_cost)*p.shares), 0);
+  const cards = [
+    ['區間總損益', st?fmt(st.pnl):'—', st?cls(st.pnl):''],
+    ['已實現(區間)', st?fmt(st.realized):'—', st?cls(st.realized):''],
+    ['未實現', st?fmt(st.unrealized):'—', st?cls(st.unrealized):''],
+    ['持倉市值', fmt(mktVal), ''],
+    ['持倉檔數', fmt(positions.length), ''],
+    ['勝率(區間)', (st&&st.win_rate!=null)?st.win_rate+'%':'—', ''],
+    ['平倉筆數(區間)', st?fmt(st.n_closed):'—', ''],
+  ];
+  const cardsHtml = '<div class="cards">'+cards.map(([k,val,c])=>
+    '<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+val+'</div></div>').join('')+'</div>';
+  v.innerHTML = recordsToggleHtml() + cardsHtml + positionsTable(positions) + eventsTable(events);
+  v.querySelectorAll('button[data-acc]').forEach(btn=>btn.onclick=()=>{
+    recordsKey = btn.dataset.acc; renderRecords(rep, cap, a, b, labels);
+  });
 }
 
 function tableHtml(closed){
