@@ -71,6 +71,7 @@
   <button data-tab="compare" class="active">對照</button>
   <button data-tab="real">實單</button>
   <button data-tab="sim">模擬單</button>
+  <button data-tab="bull">母策略(Bull)</button>
   <button data-tab="records">交易紀錄</button>
 </nav>
 <main>
@@ -78,13 +79,23 @@
   <section id="view-compare"></section>
   <section id="view-real" style="display:none"></section>
   <section id="view-sim" style="display:none"></section>
+  <section id="view-bull" style="display:none"></section>
   <section id="view-records" style="display:none"></section>
 </main>
 
 <script>
-const STATE = { report:null, charts:[] };
+const STATE = { report:null, charts:[], simSel:0 };
 const BCOLOR = {'0050':'#b08800', '00631L':'#8250df'};
-const SCOLOR = {real:'#2563eb', sim:'#dc2626'};
+const SCOLOR = {real:'#2563eb', bull:'#059669', sim0:'#dc2626', sim1:'#0f766e', sim2:'#9333ea'};
+
+function modeObj(rep, key){
+  if(!rep) return {};
+  if(key==='real') return rep.real||{};
+  if(key==='bull') return rep.bull||{};
+  if(key.indexOf('sim')===0){ const i=parseInt(key.slice(3),10)||0; return (rep.sims||[])[i]||{}; }
+  return {};
+}
+function simColor(i){ return SCOLOR['sim'+i] || ['#dc2626','#0f766e','#9333ea'][i%3]; }
 
 function capital(){ const v = parseFloat(document.getElementById('capital').value); return (v>0)?v:100000; }
 function fmt(n, d=0){ if(n===null||n===undefined||isNaN(n)) return '—'; return Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
@@ -96,7 +107,7 @@ function seriesColor(n){ return n>0?'#dc2626':(n<0?'#2e7d32':'#888'); }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  ['compare','real','sim','records'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
+  ['compare','real','sim','bull','records'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
 });
 
 function destroyCharts(){ STATE.charts.forEach(c=>{try{c.destroy();}catch(e){}}); STATE.charts=[]; }
@@ -129,16 +140,18 @@ function currentRange(){
 // 策略：以區間起點淨值歸零；回傳 {ret, daily, dd, pnlAbs}
 function stratRange(m, cap, a, b){
   if(!m || !m.dates || !m.dates.length) return null;
-  const realized = m.realized||[], unreal = m.unrealized||[];
-  const pnl = realized.map((r,i)=>(r||0)+(unreal[i]||0));
+  let pnl;
+  if(m.kind==='nav'){ pnl = (m.equity||[]).map(e=>(e==null)?null:(e-cap)); }
+  else { const realized = m.realized||[], unreal = m.unrealized||[];
+         pnl = realized.map((r,i)=>(r==null?0:r)+(unreal[i]==null?0:unreal[i])); }
   const seg = pnl.slice(a,b+1);
-  if(!seg.length) return null;
+  if(!seg.length || seg[0]==null) return null;
   const e0 = cap + seg[0];
-  const ret = seg.map(p=> e0 ? +(((cap+p)/e0 - 1)*100).toFixed(4) : 0);
-  const eq = seg.map(p=> cap+p);
-  const daily = eq.map((x,i)=> i? +(x-eq[i-1]).toFixed(2) : 0);
-  let peak=null; const dd = eq.map(e=>{ peak=(peak===null)?e:Math.max(peak,e); return peak? +(((e/peak)-1)*100).toFixed(4):0; });
-  return { ret, daily, dd, eq, pnlAbs: seg.map(p=>+p.toFixed(2)) };
+  const ret = seg.map(p=> (p==null)?null : e0 ? +(((cap+p)/e0 - 1)*100).toFixed(4) : 0);
+  const eq = seg.map(p=> (p==null)?null : cap+p);
+  const daily = eq.map((x,i)=> (i==0||x==null||eq[i-1]==null)?0 : +(x-eq[i-1]).toFixed(2));
+  let peak=null; const dd = eq.map(e=>{ if(e==null) return null; peak=(peak===null)?e:Math.max(peak,e); return peak? +(((e/peak)-1)*100).toFixed(4):0; });
+  return { ret, daily, dd, eq, pnlAbs: seg.map(p=>(p==null)?null:+p.toFixed(2)) };
 }
 
 // 市場：以區間內第一個有效收盤價歸零
@@ -225,7 +238,8 @@ function renderAll(){
     '資料時間 '+(rep.generated_at||'-')+' ｜ 期間 '+(labels.length?labels[0]+'~'+labels[labels.length-1]:'-')+' ｜ 本金 '+fmt(cap);
   renderCompare(rep, cap, a, b, labels);
   renderMode('real', rep.real, cap, a, b, labels);
-  renderMode('sim', rep.sim, cap, a, b, labels);
+  renderSimMode(rep, cap, a, b, labels);
+  renderMode('bull', rep.bull, cap, a, b, labels);
   renderRecords(rep, cap, a, b, labels);
 }
 
@@ -236,21 +250,24 @@ function renderNotes(rep){
   el.innerHTML = notes.map(n=>'<div class="notes">'+n+'</div>').join('');
 }
 
-function metricCards(st){
+function metricCards(st, kind){
   if(!st) return '<div class="empty">此區間無資料</div>';
+  const nav = kind==='nav';
   const items = [
     ['區間報酬', pct(st.ret_pct), cls(st.ret_pct)],
     ['區間損益', fmt(st.pnl), cls(st.pnl)],
     ['淨值', fmt(st.equity), ''],
-    ['已實現(區間)', fmt(st.realized), cls(st.realized)],
-    ['未實現', fmt(st.unrealized), cls(st.unrealized)],
     ['最大回撤', pct(st.max_dd), st.max_dd<0?'down':'flat'],
     ['平倉筆數', fmt(st.n_closed), ''],
     ['勝率', st.win_rate===null?'—':st.win_rate+'%', ''],
     ['平均每筆', st.avg_trade_pct===null?'—':pct(st.avg_trade_pct), cls(st.avg_trade_pct)],
-    ['Profit Factor', st.profit_factor===null?'—':st.profit_factor, ''],
-    ['最佳/最差', (st.best==null?'—':pct(st.best))+' / '+(st.worst==null?'—':pct(st.worst)), ''],
   ];
+  if(!nav){
+    items.splice(3,0,['已實現(區間)', fmt(st.realized), cls(st.realized)]);
+    items.splice(4,0,['未實現', fmt(st.unrealized), cls(st.unrealized)]);
+    items.push(['Profit Factor', st.profit_factor===null?'—':st.profit_factor, '']);
+    items.push(['最佳/最差', (st.best==null?'—':pct(st.best))+' / '+(st.worst==null?'—':pct(st.worst)), '']);
+  }
   return '<div class="cards">'+items.map(([k,v,c])=>
     '<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div></div>').join('')+'</div>';
 }
@@ -258,18 +275,21 @@ function metricCards(st){
 function renderCompare(rep, cap, a, b, labels){
   const v = document.getElementById('view-compare');
   const realSt = rangeStats(rep.real, cap, a, b);
-  const simSt  = rangeStats(rep.sim,  cap, a, b);
+  const sims = rep.sims||[];
+  const simSt = sims.map(m=>rangeStats(m, cap, a, b));
+  const bullSt = rangeStats(rep.bull, cap, a, b);
+  let head = '<div><h3 style="margin:0 0 8px;color:'+SCOLOR.real+'">實單</h3>'+metricCards(realSt)+'</div>';
+  let cols = sims.map((m,i)=>
+    '<div><h3 style="margin:0 0 8px;color:'+simColor(i)+'">'+(m.label||'模擬單')+'</h3>'+metricCards(simSt[i])+'</div>').join('');
   v.innerHTML =
-    '<div class="two">'+
-      '<div><h3 style="margin:0 0 8px;color:#2563eb">實單</h3>'+metricCards(realSt)+'</div>'+
-      '<div><h3 style="margin:0 0 8px;color:#dc2626">模擬單</h3>'+metricCards(simSt)+'</div>'+
-    '</div>'+
-    '<div class="chartbox"><h3>累積總報酬 %（以區間第一天為 0）— 實單 vs 模擬單 vs 0050 vs 00631L</h3>'+
+    '<div class="two">'+head+cols+'</div>'+
+    '<div class="chartbox"><h3>累積總報酬 %（以區間第一天為 0）— 實單 vs 模擬單(10萬/100萬/300萬) vs Bull(母策略) vs 0050 vs 00631L</h3>'+
       '<div class="canvas-wrap"><canvas id="c-cmp"></canvas></div></div>';
 
   const datasets=[];
   if(realSt) datasets.push(lineDs('實單', realSt.strat.ret, SCOLOR.real));
-  if(simSt)  datasets.push(lineDs('模擬單', simSt.strat.ret, SCOLOR.sim));
+  sims.forEach((m,i)=>{ if(simSt[i]) datasets.push(lineDs((m.label||'模擬單('+i+')'), simSt[i].strat.ret, simColor(i))); });
+  if(bullSt) datasets.push(lineDs('Bull(母策略)', bullSt.strat.ret, SCOLOR.bull, [8,4]));
   Object.keys(rep.market||{}).forEach(code=>{
     const mk = mktRange(code, a, b);
     if(mk) datasets.push(lineDs((rep.market[code].label||code), mk.ret, BCOLOR[code]||'#999', [6,4]));
@@ -289,42 +309,76 @@ function histogram(pcts){
   return {labels,counts};
 }
 
-function renderMode(key, m, cap, a, b, labels){
-  const v = document.getElementById('view-'+key);
+function segToggleHtml(items){
+  return '<div class="segtoggle">'+items.map(it=>
+    '<button class="accbtn'+(it.active?' active':'')+'" data-acc="'+it.key+'">'+it.label+'</button>').join('')+'</div>';
+}
+
+function renderModeBody(key, m, cap, a, b, labels, v, color){
   const st = rangeStats(m, cap, a, b);
+  const nav = m.kind==='nav';
   if(!st){
-    v.innerHTML = '<div class="empty">尚無'+ (key==='real'?'實單':'模擬單') +'交易紀錄</div>';
+    v.innerHTML = '<div class="empty">尚無「'+(m.label||key)+'」'+(nav?'NAV 走勢':'交易紀錄')+'</div>';
     return;
   }
-  const hist = histogram(st.closed.map(t=>t.pnl_pct));
-  v.innerHTML =
-    metricCards(st)+
+  const hist = nav ? {labels:[],counts:[]} : histogram(st.closed.map(t=>t.pnl_pct));
+  let body = metricCards(st, nav?'nav':'')+
     '<div class="chartbox"><h3>累積報酬 %（以區間第一天為 0）</h3>'+
       '<div class="canvas-wrap"><canvas id="c-'+key+'-ret"></canvas></div></div>'+
     '<div class="two">'+
       '<div class="chartbox"><h3>每日損益（元）</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-daily"></canvas></div></div>'+
       '<div class="chartbox"><h3>回撤 %</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-dd"></canvas></div></div>'+
-    '</div>'+
-    '<div class="chartbox"><h3>每筆平倉報酬分布</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-hist"></canvas></div></div>'+
-    tableHtml(st.closed);
+    '</div>';
+  if(!nav){
+    body +=
+      '<div class="chartbox"><h3>每筆平倉報酬分布</h3><div class="canvas-wrap sm"><canvas id="c-'+key+'-hist"></canvas></div></div>'+
+      tableHtml(st.closed);
+  }
+  v.innerHTML = body;
 
   mkChart('c-'+key+'-ret', { type:'line',
-    data:{ labels, datasets:[ lineDs('報酬%', st.strat.ret, SCOLOR[key]) ]}, options:baseOpt('%') });
+    data:{ labels, datasets:[ lineDs('報酬%', st.strat.ret, color) ]}, options:baseOpt('%') });
   mkChart('c-'+key+'-daily', { type:'bar',
     data:{ labels, datasets:[{ label:'每日損益', data:st.strat.daily, backgroundColor:st.strat.daily.map(seriesColor) }]},
     options:baseOpt('元') });
   mkChart('c-'+key+'-dd', { type:'line',
     data:{ labels, datasets:[ lineDs('回撤', st.strat.dd, '#ef4444') ]}, options:baseOpt('%') });
-  mkChart('c-'+key+'-hist', { type:'bar',
+  if(!nav) mkChart('c-'+key+'-hist', { type:'bar',
     data:{ labels:hist.labels, datasets:[{ label:'筆數', data:hist.counts, backgroundColor:'#3b82f6' }]},
     options:baseOpt('筆數') });
 }
 
+function renderMode(key, m, cap, a, b, labels){
+  renderModeBody(key, m, cap, a, b, labels,
+    document.getElementById('view-'+key), SCOLOR[key] || '#999');
+}
+
+function renderSimMode(rep, cap, a, b, labels){
+  const v = document.getElementById('view-sim');
+  const sims = rep.sims || [];
+  if(!sims.length){
+    v.innerHTML = '<div class="empty">尚無模擬帳本設定</div>';
+    return;
+  }
+  STATE.simSel = Math.min(STATE.simSel, sims.length-1);
+  const m = sims[STATE.simSel];
+  const toggles = sims.map((s,i)=>({ key:'sim'+i, label: s.label||'模擬單', active:i===STATE.simSel }));
+  v.innerHTML = segToggleHtml(toggles);
+  const body = document.createElement('div');
+  v.appendChild(body);
+  renderModeBody('sim'+STATE.simSel, m, cap, a, b, labels, body, simColor(STATE.simSel));
+  v.querySelectorAll('button[data-acc]').forEach(btn=>btn.onclick=()=>{
+    STATE.simSel = parseInt((btn.dataset.acc||'sim0').slice(3),10)||0;
+    renderSimMode(rep, cap, a, b, labels);
+  });
+}
+
 let recordsKey = 'real';
 
-function recordsToggleHtml(){
-  const b = k => '<button class="accbtn'+(recordsKey===k?' active':'')+'" data-acc="'+k+'">'+((STATE.report&&STATE.report[k])?STATE.report[k].label:k)+'</button>';
-  return '<div class="segtoggle">'+b('real')+b('sim')+'</div>';
+function recordsModeKeys(rep){
+  const ks=[{key:'real',label:((rep&&rep.real)||{}).label||'實單'}];
+  ((rep&&rep.sims)||[]).forEach((s,i)=>ks.push({key:'sim'+i,label:(s&&s.label)||'模擬單'}));
+  return ks;
 }
 
 function positionsTable(positions){
@@ -364,7 +418,9 @@ function eventsTable(events){
 
 function renderRecords(rep, cap, a, b, labels){
   const v = document.getElementById('view-records');
-  const m = rep[recordsKey] || {};
+  const modeKeys = recordsModeKeys(rep);
+  if(!modeKeys.some(k=>k.key===recordsKey)) recordsKey='real';
+  const m = modeObj(rep, recordsKey) || {};
   const st = rangeStats(m, cap, a, b);
   const days = rep.days || [];
   const d0 = days[a], d1 = days[b];
@@ -383,7 +439,8 @@ function renderRecords(rep, cap, a, b, labels){
   ];
   const cardsHtml = '<div class="cards">'+cards.map(([k,val,c])=>
     '<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+val+'</div></div>').join('')+'</div>';
-  v.innerHTML = recordsToggleHtml() + cardsHtml + positionsTable(positions) + eventsTable(events);
+  const toggles = modeKeys.map(k=>({key:k.key,label:k.label,active:k.key===recordsKey}));
+  v.innerHTML = segToggleHtml(toggles) + cardsHtml + positionsTable(positions) + eventsTable(events);
   v.querySelectorAll('button[data-acc]').forEach(btn=>btn.onclick=()=>{
     recordsKey = btn.dataset.acc; renderRecords(rep, cap, a, b, labels);
   });
