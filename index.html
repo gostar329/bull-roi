@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>實單 / 模擬單 ROI 報表</title>
+<title>實單 / 模擬單 / Bull策略 · 投資報酬分析</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root { --up:#e53935; --down:#2e7d32; --muted:#888; }
@@ -41,6 +41,7 @@
   .empty { text-align:center; color:var(--muted); padding:48px; }
   .notes { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
   .two { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .cmp-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:16px; margin-bottom:16px; }
   @media (max-width:900px){ .two { grid-template-columns:1fr; } }
   .segtoggle { display:flex; gap:6px; margin-bottom:14px; }
   .accbtn { background:#334155; color:#e2e8f0; padding:5px 14px; }
@@ -53,7 +54,7 @@
 </head>
 <body>
 <header>
-  <h1>實單 / 模擬單 · 投資報酬分析</h1>
+  <h1>實單 / 模擬單 / Bull策略 · 投資報酬分析</h1>
   <span class="spacer"></span>
   <label>開始日期 <select id="start"></select></label>
   <label>結束日期 <select id="end"></select></label>
@@ -71,6 +72,7 @@
   <button data-tab="compare" class="active">對照</button>
   <button data-tab="real">實單</button>
   <button data-tab="sim">模擬單</button>
+  <button data-tab="paper">Bull策略</button>
   <button data-tab="records">交易紀錄</button>
 </nav>
 <main>
@@ -78,18 +80,20 @@
   <section id="view-compare"></section>
   <section id="view-real" style="display:none"></section>
   <section id="view-sim" style="display:none"></section>
+  <section id="view-paper" style="display:none"></section>
   <section id="view-records" style="display:none"></section>
 </main>
 
 <script>
 const STATE = { report:null, charts:[] };
 const BCOLOR = {'0050':'#b08800', '00631L':'#8250df'};
-const SCOLOR = {real:'#2563eb', sim:'#dc2626'};
+const SCOLOR = {real:'#2563eb', sim:'#dc2626', paper:'#16a34a'};
 
 function modeObj(rep, key){
   if(!rep) return {};
   if(key==='real') return rep.real||{};
   if(key==='sim') return rep.sim||{};
+  if(key==='paper') return rep.paper||{};
   return {};
 }
 
@@ -103,7 +107,7 @@ function seriesColor(n){ return n>0?'#dc2626':(n<0?'#2e7d32':'#888'); }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  ['compare','real','sim','records'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
+  ['compare','real','sim','paper','records'].forEach(t=>document.getElementById('view-'+t).style.display = (t===b.dataset.tab)?'':'none');
 });
 
 function destroyCharts(){ STATE.charts.forEach(c=>{try{c.destroy();}catch(e){}}); STATE.charts=[]; }
@@ -134,15 +138,18 @@ function currentRange(){
 }
 
 // 策略：以區間起點淨值歸零；回傳 {ret, daily, dd, pnlAbs}
+// 各模式有自己的初始本金（m.capital，如 Bull策略 1,000,000）時優先採用，
+// 否則用頁面輸入框本金（實單/模擬單共用）。
 function stratRange(m, cap, a, b){
   if(!m || !m.dates || !m.dates.length) return null;
+  const c0 = (m.capital>0) ? m.capital : cap;
   const realized = m.realized||[], unreal = m.unrealized||[];
   const pnl = realized.map((r,i)=>(r==null?0:r)+(unreal[i]==null?0:unreal[i]));
   const seg = pnl.slice(a,b+1);
   if(!seg.length || seg[0]==null) return null;
-  const e0 = cap + seg[0];
-  const ret = seg.map(p=> (p==null)?null : e0 ? +(((cap+p)/e0 - 1)*100).toFixed(4) : 0);
-  const eq = seg.map(p=> (p==null)?null : cap+p);
+  const e0 = c0 + seg[0];
+  const ret = seg.map(p=> (p==null)?null : e0 ? +(((c0+p)/e0 - 1)*100).toFixed(4) : 0);
+  const eq = seg.map(p=> (p==null)?null : c0+p);
   const daily = eq.map((x,i)=> (i===0||x==null||eq[i-1]==null)?0 : +(x-eq[i-1]).toFixed(2));
   let peak=null; const dd = eq.map(e=>{ if(e==null) return null; peak=(peak===null)?e:Math.max(peak,e); return peak? +(((e/peak)-1)*100).toFixed(4):0; });
   return { ret, daily, dd, eq, pnlAbs: seg.map(p=>(p==null)?null:+p.toFixed(2)) };
@@ -233,6 +240,7 @@ function renderAll(){
   renderCompare(rep, cap, a, b, labels);
   renderMode('real', rep.real, cap, a, b, labels);
   renderMode('sim', rep.sim, cap, a, b, labels);
+  renderMode('paper', rep.paper, cap, a, b, labels);
   renderRecords(rep, cap, a, b, labels);
 }
 
@@ -266,16 +274,20 @@ function renderCompare(rep, cap, a, b, labels){
   const v = document.getElementById('view-compare');
   const realSt = rangeStats(rep.real, cap, a, b);
   const simSt = rangeStats(rep.sim, cap, a, b);
+  const paperSt = rangeStats(rep.paper, cap, a, b);
+  const capOf = m => (m && m.capital>0) ? m.capital : cap;
   let head = '<div><h3 style="margin:0 0 8px;color:'+SCOLOR.real+'">實單</h3>'+metricCards(realSt)+'</div>';
   let cols = '<div><h3 style="margin:0 0 8px;color:'+SCOLOR.sim+'">模擬單</h3>'+metricCards(simSt)+'</div>';
+  let paperCol = '<div><h3 style="margin:0 0 8px;color:'+SCOLOR.paper+'">Bull策略</h3>'+metricCards(paperSt)+'</div>';
   v.innerHTML =
-    '<div class="two">'+head+cols+'</div>'+
-    '<div class="chartbox"><h3>累積總報酬 %（以區間第一天為 0）— 實單 vs 模擬單 vs 0050 vs 00631L</h3>'+
+    '<div class="cmp-grid">'+head+cols+paperCol+'</div>'+
+    '<div class="chartbox"><h3>累積總報酬 %（以區間第一天為 0）— 實單 vs 模擬單 vs Bull策略 vs 0050 vs 00631L</h3>'+
       '<div class="canvas-wrap"><canvas id="c-cmp"></canvas></div></div>';
 
   const datasets=[];
   if(realSt) datasets.push(lineDs('實單', realSt.strat.ret, SCOLOR.real));
   if(simSt) datasets.push(lineDs('模擬單', simSt.strat.ret, SCOLOR.sim));
+  if(paperSt) datasets.push(lineDs('Bull策略', paperSt.strat.ret, SCOLOR.paper));
   Object.keys(rep.market||{}).forEach(code=>{
     const mk = mktRange(code, a, b);
     if(mk) datasets.push(lineDs((rep.market[code].label||code), mk.ret, BCOLOR[code]||'#999', [6,4]));
@@ -341,6 +353,7 @@ function recordsModeKeys(rep){
   return [
     {key:'real', label:((rep&&rep.real)||{}).label||'實單'},
     {key:'sim',  label:((rep&&rep.sim)||{}).label||'模擬單'},
+    {key:'paper', label:((rep&&rep.paper)||{}).label||'Bull策略'},
   ];
 }
 
