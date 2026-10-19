@@ -176,12 +176,11 @@ function rangeStats(m, cap, a, b){
   const pcts = closed.map(c=>c.pnl_pct);
   const wins = closed.filter(c=>c.pnl>0), losses = closed.filter(c=>c.pnl<0);
   const gw = wins.reduce((s,c)=>s+c.pnl,0), gl = Math.abs(losses.reduce((s,c)=>s+c.pnl,0));
-  const realizedDelta = st.pnlAbs[st.pnlAbs.length-1] - st.pnlAbs[0];
   return {
     ret_pct: st.ret[st.ret.length-1],
     pnl: st.pnlAbs[st.pnlAbs.length-1] - st.pnlAbs[0],
     equity: st.eq[st.eq.length-1],
-    realized: +realizedDelta.toFixed(2),
+    realized: +closed.reduce((s,c)=>s+(c.pnl||0),0).toFixed(2),
     unrealized: (m.unrealized||[]).length? +(m.unrealized[b]||0).toFixed(2) : 0,
     max_dd: Math.min.apply(null, st.dd),
     n_fills: events.length,
