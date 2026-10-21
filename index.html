@@ -196,7 +196,7 @@ function rangeStats(m, cap, a, b){
 
 // data.json 來源：發佈時由 gist_sync.py --page 把佔位字換成 Gist raw URL；
 // 未替換（本機開檔）時退回同目錄 ./data.json。
-const DATA_URL = 'https://gist.githubusercontent.com/gostar329/02d856b7145649dc21bec824ecbfd9a7/raw/54db48b071991424b412f03629d801ab4c60ea2d/data.json';
+const DATA_URL = 'https://gist.githubusercontent.com/gostar329/02d856b7145649dc21bec824ecbfd9a7/raw/9e6fec5aff8501522dfc8395c9d13a25fde18ffa/data.json';
 
 function load(force){
   const base = (typeof DATA_URL === 'string' && DATA_URL.indexOf('http') === 0)
@@ -366,12 +366,14 @@ function recordsModeKeys(rep){
 function positionsTable(positions){
   if(!positions || !positions.length) return '<div class="chartbox"><h3>目前持倉</h3><div class="empty">目前無持倉</div></div>';
   return '<div class="chartbox"><h3>目前持倉（最新）</h3><div class="wrap-table"><table>'+
-    '<thead><tr><th>股票</th><th>代號</th><th>股數</th><th>均價</th><th>現價</th><th>市值</th><th>損益</th></tr></thead><tbody>'+
+    '<thead><tr><th>股票</th><th>代號</th><th>股數</th><th>均價</th><th>現價</th><th>市值</th><th>損益</th><th>報酬%</th></tr></thead><tbody>'+
     positions.map(p=>{
       const px = (p.last_price!=null ? p.last_price : p.avg_cost);
       const mv = px*p.shares;
+      const pctv = (p.unrealized_pct!=null) ? p.unrealized_pct : (p.avg_cost ? (px-p.avg_cost)/p.avg_cost*100 : 0);
       return '<tr><td>'+p.name+'</td><td>'+p.code+'</td><td>'+fmt(p.shares)+'</td><td>'+fmt(p.avg_cost,2)+
-        '</td><td>'+fmt(px,2)+'</td><td>'+fmt(mv)+'</td><td class="'+cls(p.unrealized)+'">'+fmt(p.unrealized)+'</td></tr>';
+        '</td><td>'+fmt(px,2)+'</td><td>'+fmt(mv)+'</td><td class="'+cls(p.unrealized)+'">'+fmt(p.unrealized)+
+        '</td><td class="'+cls(pctv)+'">'+pct(pctv)+'</td></tr>';
     }).join('')+'</tbody></table></div></div>';
 }
 
@@ -386,15 +388,16 @@ function eventsTable(events){
   const rows = events.map(e=>{
     const isBuy = e.action==='buy';
     const time = e.ts ? e.ts.slice(5,16).replace('T',' ') : e.date;
-    const pnl = isBuy ? '<td class="flat">—</td>'
-      : '<td class="'+cls(e.realized)+'">'+fmt(e.realized)+(e.pnl_pct!=null?' <span style="font-size:.85em">('+pct(e.pnl_pct)+')</span>':'')+'</td>';
+    const pnl = isBuy ? '<td class="flat">—</td><td class="flat">—</td>'
+      : '<td class="'+cls(e.realized)+'">'+fmt(e.realized)+'</td>'
+        +'<td class="'+cls(e.pnl_pct)+'">'+(e.pnl_pct!=null?pct(e.pnl_pct):'—')+'</td>';
     const title = e.reason ? ' title="'+e.reason+'"' : '';
     return '<tr'+title+'><td>'+time+'</td><td>'+resultTag(e)+'</td><td>'+e.name+'</td><td>'+e.code+'</td>'+
       '<td>'+(isBuy?'買':'賣')+'</td><td>'+fmt(e.shares)+'</td><td>'+fmt(e.price,2)+'</td>'+
       '<td>'+fmt(e.amount)+'</td><td>'+fmt(e.fee+e.tax)+'</td>'+pnl+'</tr>';
   }).join('');
   return '<div class="chartbox"><h3>交易紀錄（逐筆成交，'+events.length+' 筆）</h3><div class="wrap-table"><table>'+
-    '<thead><tr><th>時間</th><th>賺賠</th><th>股票</th><th>代號</th><th>買賣</th><th>股數</th><th>價格</th><th>金額</th><th>費+稅</th><th>損益</th></tr></thead><tbody>'+
+    '<thead><tr><th>時間</th><th>賺賠</th><th>股票</th><th>代號</th><th>買賣</th><th>股數</th><th>價格</th><th>金額</th><th>費+稅</th><th>損益</th><th>報酬%</th></tr></thead><tbody>'+
     rows+'</tbody></table></div></div>';
 }
 
