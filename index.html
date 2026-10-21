@@ -196,7 +196,7 @@ function rangeStats(m, cap, a, b){
 
 // data.json 來源：發佈時由 gist_sync.py --page 把佔位字換成 Gist raw URL；
 // 未替換（本機開檔）時退回同目錄 ./data.json。
-const DATA_URL = 'https://gist.githubusercontent.com/gostar329/02d856b7145649dc21bec824ecbfd9a7/raw/9e6fec5aff8501522dfc8395c9d13a25fde18ffa/data.json';
+const DATA_URL = 'https://gist.githubusercontent.com/gostar329/02d856b7145649dc21bec824ecbfd9a7/raw/f94bacd0887c2ecadf3b5bf19cef626caf6e1b53/data.json';
 
 function load(force){
   const base = (typeof DATA_URL === 'string' && DATA_URL.indexOf('http') === 0)
@@ -371,7 +371,8 @@ function positionsTable(positions){
       const px = (p.last_price!=null ? p.last_price : p.avg_cost);
       const mv = px*p.shares;
       const pctv = (p.unrealized_pct!=null) ? p.unrealized_pct : (p.avg_cost ? (px-p.avg_cost)/p.avg_cost*100 : 0);
-      return '<tr><td>'+p.name+'</td><td>'+p.code+'</td><td>'+fmt(p.shares)+'</td><td>'+fmt(p.avg_cost,2)+
+      const yurl = 'https://tw.stock.yahoo.com/quote/'+p.code+'.TW/technical-analysis';
+      return '<tr><td>'+p.name+'</td><td><a href="'+yurl+'" target="_blank" rel="noopener">'+p.code+'</a></td><td>'+fmt(p.shares)+'</td><td>'+fmt(p.avg_cost,2)+
         '</td><td>'+fmt(px,2)+'</td><td>'+fmt(mv)+'</td><td class="'+cls(p.unrealized)+'">'+fmt(p.unrealized)+
         '</td><td class="'+cls(pctv)+'">'+pct(pctv)+'</td></tr>';
     }).join('')+'</tbody></table></div></div>';
